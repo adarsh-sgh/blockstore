@@ -27,8 +27,16 @@ struct SimEnv::Impl {
   std::mutex mu;
   std::map<std::string, std::shared_ptr<Node>> live, durable;
   bool frozen = false;
+  uint64_t countdown = 0;  // 0 = disarmed
   void check() {
     if (frozen) throw IoError("sim: crashed");
+  }
+  void mutate() {  // called before every write, sync and directory change
+    check();
+    if (countdown && --countdown == 0) {
+      frozen = true;
+      check();
+    }
   }
 };
 
@@ -46,14 +54,14 @@ class SimFile : public File {
   }
   void pwrite(const void* buf, size_t n, uint64_t off) override {
     std::lock_guard<std::mutex> g(env_->mu);
-    env_->check();
+    env_->mutate();
     auto p = static_cast<const uint8_t*>(buf);
     put(n_->live, off, p, n);
     n_->pending.push_back({off, std::vector<uint8_t>(p, p + n)});
   }
   void sync() override {
     std::lock_guard<std::mutex> g(env_->mu);
-    env_->check();
+    env_->mutate();
     n_->durable = n_->live;
     n_->pending.clear();
   }
@@ -96,13 +104,13 @@ std::vector<std::string> SimEnv::list() {
 
 void SimEnv::remove(const std::string& name) {
   std::lock_guard<std::mutex> g(impl_->mu);
-  impl_->check();
+  impl_->mutate();
   impl_->live.erase(name);
 }
 
 void SimEnv::rename(const std::string& from, const std::string& to) {
   std::lock_guard<std::mutex> g(impl_->mu);
-  impl_->check();
+  impl_->mutate();
   auto it = impl_->live.find(from);
   if (it == impl_->live.end()) throw IoError("sim: rename missing " + from);
   impl_->live[to] = it->second;
@@ -111,13 +119,18 @@ void SimEnv::rename(const std::string& from, const std::string& to) {
 
 void SimEnv::sync_dir() {
   std::lock_guard<std::mutex> g(impl_->mu);
-  impl_->check();
+  impl_->mutate();
   impl_->durable = impl_->live;
 }
 
 void SimEnv::freeze() {
   std::lock_guard<std::mutex> g(impl_->mu);
   impl_->frozen = true;
+}
+
+void SimEnv::freeze_after(uint64_t ops) {
+  std::lock_guard<std::mutex> g(impl_->mu);
+  impl_->countdown = ops;
 }
 
 void SimEnv::crash(std::mt19937_64& rng) {
@@ -154,6 +167,7 @@ void SimEnv::crash(std::mt19937_64& rng) {
   // Nodes reachable only from the old live namespace are gone.
   impl_->durable = impl_->live;
   impl_->frozen = false;
+  impl_->countdown = 0;
 }
 
 bool SimEnv::flip_bit(const std::string& name, std::mt19937_64& rng) {

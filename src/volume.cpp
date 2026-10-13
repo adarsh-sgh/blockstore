@@ -646,7 +646,11 @@ void Volume::committer() {
       st_.groups++;
     }
     if (ckpt) st_.checkpoints++;
-    finish_deletes();
+    try {
+      finish_deletes();
+    } catch (const std::exception& e) {
+      failed_ = e.what();
+    }
     done_cv_.notify_all();
   }
   done_cv_.notify_all();
