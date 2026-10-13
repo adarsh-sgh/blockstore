@@ -1,0 +1,53 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            cxx: g++
+          - os: macos-latest
+            cxx: clang++
+    runs-on: ${{ matrix.os }}
+    env:
+      CXX: ${{ matrix.cxx }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: deps
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y liburing-dev fio
+      - name: configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+      - name: build
+        run: cmake --build build -j 4
+      - name: tests (model, power-loss simulation, bit flips, kill -9, failover)
+        run: ./build/blockstore_tests
+      - name: fio over NBD with crc32c verify
+        if: runner.os == 'Linux'
+        run: |
+          ./build/blockstored --dir "$RUNNER_TEMP/vol" --blocks 65536 --host 127.0.0.1 & SRV=$!
+          sleep 1
+          fio --name=verify --ioengine=nbd --uri=nbd://127.0.0.1:10809 --rw=randwrite --bs=4k \
+              --iodepth=16 --size=128M --verify=crc32c --do_verify=1 --verify_fatal=1
+          kill $SRV
+          wait $SRV
+
+  sanitizers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: deps
+        run: sudo apt-get update && sudo apt-get install -y liburing-dev
+      - name: configure (ASan + UBSan)
+        run: cmake -S . -B build-asan -DCMAKE_BUILD_TYPE=Debug -DBLOCKSTORE_ASAN=ON
+      - name: build
+        run: cmake --build build-asan -j 4
+      - name: tests
+        run: ./build-asan/blockstore_tests
