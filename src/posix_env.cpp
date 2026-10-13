@@ -100,6 +100,15 @@ class PosixEnv : public Env {
       if (!uring_) uring_error_ = std::strerror(-rc);
     }
 #endif
+#ifdef O_DIRECT
+    if (opt_.direct) {  // probe, so describe() is accurate before the first segment exists
+      std::string probe = dir_ + "/.direct-probe";
+      int fd = ::open(probe.c_str(), O_RDWR | O_CREAT | O_DIRECT | O_CLOEXEC, 0644);
+      if (fd >= 0) any_direct_ = true, ::close(fd);
+      else direct_refused_ = true;
+      ::unlink(probe.c_str());
+    }
+#endif
     if (opt_.io == IoMode::Uring && !uring_)
       throw IoError("io_uring unavailable: " + (uring_error_.empty() ? "not compiled in" : uring_error_));
   }

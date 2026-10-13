@@ -164,6 +164,7 @@ std::unique_ptr<Volume> Volume::open(Env& env, const Options& opt) {
   std::unique_ptr<Volume> v(new Volume(env, opt));
   v->recover();
   v->committer_ = std::thread(&Volume::committer, v.get());
+  v->preparer_ = std::thread(&Volume::preparer, v.get());
   return v;
 }
 
@@ -173,7 +174,9 @@ Volume::~Volume() {
     stop_ = true;
   }
   work_cv_.notify_all();
+  spare_cv_.notify_all();
   if (committer_.joinable()) committer_.join();
+  if (preparer_.joinable()) preparer_.join();
   std::unordered_set<MapPage*> pages;
   for (MapPage* p : live_) pages.insert(p);
   for (auto& [id, m] : snaps_)
@@ -295,8 +298,18 @@ void Volume::finish_deletes() {
     }
     auto it = segs_.find(seg);
     if (it != segs_.end() && it->second.chunks.empty()) {
-      segs_.erase(it);  // open readers keep the unlinked file alive
-      env_.remove(seg_name(seg));
+      // Recycle into the spare pool unless a reader still holds the file (it
+      // must keep seeing the old bytes); an unlinked file stays readable.
+      bool recycle = it->second.file.use_count() == 1 && spares_.size() < opt_.spare_segments;
+      segs_.erase(it);
+      if (recycle) {
+        std::string name = "free-" + std::to_string(next_spare_++) + ".dat";
+        env_.rename(seg_name(seg), name);
+        spares_.push_back(name);
+        st_.segments_recycled++;
+      } else {
+        env_.remove(seg_name(seg));
+      }
       st_.segments_freed++;
       freed = true;
     }
@@ -401,8 +414,11 @@ void Volume::roll_segment(std::unique_lock<std::mutex>* lk) {
     }
   }
   uint64_t id = next_seg_;
-  auto f = env_.open(seg_name(id), true);
-  f->preallocate(opt_.segment_bytes);
+  auto f = take_spare(id);
+  if (!f) {
+    f = env_.open(seg_name(id), true);
+    f->preallocate(opt_.segment_bytes);
+  }
   env_.sync_dir();  // the segment must exist after a crash before any record names it
   next_seg_++;
   segs_[id].file = std::move(f);
@@ -668,6 +684,14 @@ void Volume::commit(Group& g, GroupSink* sink) {
   uint32_t crc = crc32c(frame.data() + 8, frame.size() - 8);
   std::memcpy(&frame[4], &crc, 4);
 
+  if (opt_.journal_extend_bytes && journal_off_ + frame.size() > journal_alloc_) {
+    // Zero-extend so frame writes stay overwrites of already-written blocks.
+    uint64_t n = align_up(journal_off_ + frame.size() - journal_alloc_, opt_.journal_extend_bytes);
+    std::vector<uint8_t> zeros(n, 0);
+    journal_->pwrite(zeros.data(), n, journal_alloc_);
+    journal_->sync();
+    journal_alloc_ += n;
+  }
   std::vector<WriteOp> ops;
   for (auto& e : g.extents) ops.push_back({e.file.get(), e.buf.data(), e.buf.size(), e.start});
   ops.push_back({journal_.get(), frame.data(), frame.size(), journal_off_});
@@ -690,6 +714,46 @@ void Volume::checkpoint() {
     notify_work();
     done_cv_.wait(lk, [&] { return st_.checkpoints >= target || !failed_.empty(); });
     check_failed();
+  }
+}
+
+// ---------------------------------------------------------------- spare segments
+
+std::shared_ptr<File> Volume::take_spare(uint64_t id) {
+  if (spares_.empty()) return nullptr;
+  std::string name = spares_.back();
+  spares_.pop_back();
+  spare_cv_.notify_one();
+  env_.rename(name, seg_name(id));
+  return env_.open(seg_name(id), true);
+}
+
+// Keeps opt_.spare_segments zero-filled files ready, within the capacity limit.
+// Its files mean nothing to recovery, so a crash here only leaves a .tmp behind.
+void Volume::preparer() {
+  std::unique_lock<std::mutex> lk(mu_);
+  for (;;) {
+    spare_cv_.wait(lk, [&] {
+      bool room = !opt_.capacity_segments || segs_.size() + spares_.size() < opt_.capacity_segments;
+      return stop_ || !failed_.empty() || (spares_.size() < opt_.spare_segments && room);
+    });
+    if (stop_ || !failed_.empty()) return;
+    std::string base = "free-" + std::to_string(next_spare_++);
+    lk.unlock();
+    try {
+      auto f = env_.open(base + ".tmp", true);
+      AlignedBuf zeros(std::min<uint64_t>(opt_.segment_bytes, 1 << 20));
+      for (uint64_t off = 0; off < opt_.segment_bytes && !stop_; off += zeros.size())
+        f->pwrite(zeros.data(), std::min<uint64_t>(zeros.size(), opt_.segment_bytes - off), off);
+      f->sync();
+      env_.rename(base + ".tmp", base + ".dat");
+    } catch (const std::exception&) {
+      return;  // the committer will hit and report the same I/O error
+    }
+    lk.lock();
+    if (stop_) return;
+    spares_.push_back(base + ".dat");
+    st_.segments_zeroed++;
   }
 }
 
@@ -874,6 +938,7 @@ void Volume::write_checkpoint(const std::vector<uint8_t>& img, uint64_t seq) {
 void Volume::open_journal(uint64_t start_seq) {
   journal_ = env_.open(journal_name(start_seq));
   journal_off_ = 0;
+  journal_alloc_ = journal_->size();
 }
 
 void Volume::recover() {
@@ -999,6 +1064,7 @@ void Volume::recover() {
   if (!frames.empty()) {
     journal_ = env_.open(journals[frames.back().file].second);
     journal_off_ = frames.back().end;
+    journal_alloc_ = journal_->size();
   } else {
     open_journal(ckpt_seq + 1);
     env_.sync_dir();
@@ -1007,11 +1073,17 @@ void Volume::recover() {
 
   for (auto it = segs_.begin(); it != segs_.end();)
     it = it->second.chunks.empty() ? segs_.erase(it) : std::next(it);
-  for (auto& n : env_.list())
+  for (auto& n : env_.list()) {
     if (uint64_t id = parse_suffix(n, "seg-", ".dat")) {
       if (!segs_.count(id)) env_.remove(n);
       next_seg_ = std::max(next_seg_, id + 1);
+    } else if (uint64_t id = parse_suffix(n, "free-", ".dat")) {
+      spares_.push_back(n);
+      next_spare_ = std::max(next_spare_, id + 1);
+    } else if (parse_suffix(n, "free-", ".tmp")) {
+      env_.remove(n);  // zeroing interrupted
     }
+  }
   env_.sync_dir();
   for (auto& [id, s] : segs_) s.file = env_.open(seg_name(id), true);
   st_.recovery_ms =

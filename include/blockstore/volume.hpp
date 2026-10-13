@@ -1,5 +1,6 @@
 #pragma once
 #include <array>
+#include <atomic>
 #include <condition_variable>
 #include <cstdint>
 #include <map>
@@ -24,6 +25,11 @@ struct Options {
   uint64_t checkpoint_bytes = 256ull << 20;  // journal size that triggers a checkpoint; 0 = never
   bool compress = true;
   bool dedup = true;
+  // Pre-zeroed segment files kept ready (and freed segments recycled into this
+  // pool), so group commits overwrite written blocks instead of converting
+  // unwritten extents, which costs a filesystem journal commit per fdatasync.
+  uint32_t spare_segments = 2;
+  uint64_t journal_extend_bytes = 4ull << 20;  // zero-extend the journal ahead of the write pointer
 };
 
 struct Corruption : std::runtime_error {
@@ -42,7 +48,7 @@ struct Stats {
   uint64_t gc_bytes_appended = 0;    // bytes rewritten by GC
   uint64_t pad_bytes = 0;            // alignment padding at group boundaries
   uint64_t groups = 0, journal_bytes = 0, checkpoints = 0;
-  uint64_t gc_runs = 0, segments_freed = 0;
+  uint64_t gc_runs = 0, segments_freed = 0, segments_recycled = 0, segments_zeroed = 0;
   // current state
   uint64_t live_chunks = 0, live_chunk_bytes = 0, segments = 0, mapped_blocks = 0;
   // last open
@@ -168,6 +174,8 @@ class Volume {
   void notify_work();
 
   void committer();
+  void preparer();
+  std::shared_ptr<File> take_spare(uint64_t id);
   void commit(Group& g, GroupSink* sink);
   void gc_step(std::unique_lock<std::mutex>& lk);
   bool gc_wanted() const;
@@ -197,8 +205,13 @@ class Volume {
   Group* inflight_ = nullptr;
   uint64_t durable_seq_ = 0;
   std::shared_ptr<File> journal_;
-  uint64_t journal_off_ = 0;
-  bool want_checkpoint_ = false, gc_stuck_ = false, stop_ = false, replaying_ = false;
+  uint64_t journal_off_ = 0, journal_alloc_ = 0;
+  std::vector<std::string> spares_;  // pre-zeroed "free-N.dat" files
+  uint64_t next_spare_ = 1;
+  std::condition_variable spare_cv_;
+  std::thread preparer_;
+  bool want_checkpoint_ = false, gc_stuck_ = false, replaying_ = false;
+  std::atomic<bool> stop_{false};
   std::string failed_;
   GroupSink* sink_ = nullptr;
   Stats st_;
