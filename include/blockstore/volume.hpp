@@ -27,8 +27,9 @@ struct Options {
   bool dedup = true;
   // Pre-zeroed segment files kept ready (and freed segments recycled into this
   // pool), so group commits overwrite written blocks instead of converting
-  // unwritten extents, which costs a filesystem journal commit per fdatasync.
-  uint32_t spare_segments = 2;
+  // unwritten extents. Off by default: it lowers p50 commit latency but the
+  // zero-fill costs bandwidth (see README, "spare segments").
+  uint32_t spare_segments = 0;
   uint64_t journal_extend_bytes = 4ull << 20;  // zero-extend the journal ahead of the write pointer
 };
 

@@ -90,7 +90,8 @@ class PosixFile : public File {
 class PosixEnv : public Env {
  public:
   PosixEnv(std::string dir, PosixOptions opt) : dir_(std::move(dir)), opt_(opt) {
-    ::mkdir(dir_.c_str(), 0755);
+    for (size_t i = 1; i <= dir_.size(); i++)  // mkdir -p
+      if (i == dir_.size() || dir_[i] == '/') ::mkdir(dir_.substr(0, i).c_str(), 0755);
     struct stat st;
     if (::stat(dir_.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) fail("mkdir " + dir_);
 #ifdef BLOCKSTORE_HAVE_URING

@@ -27,12 +27,16 @@ TEST_CASE("crash: power loss at random points never loses an acknowledged write"
   o.segment_bytes = 32 << 10;
   o.capacity_segments = 96;  // 3 MiB for 2 MiB logical + snapshots: GC under pressure
   o.checkpoint_bytes = 64 << 10;
+  o.spare_segments = 2;  // exercise pre-zeroing and recycling
   std::vector<History> h(o.blocks);
   std::mt19937_64 rng(7);
   constexpr int kThreads = 4;  // thread t owns lbas with lba % kThreads == t
   uint64_t acked_total = 0, dropped = 0, checkpoints = 0, gc_runs = 0;
 
-  for (uint64_t iter = 0; iter < iters; iter++) {
+  // Run at least `iters` crashes, longer (up to 10x) until torn groups,
+  // checkpoints and GC have each been hit.
+  uint64_t iter = 0;
+  for (; iter < iters || ((!dropped || !checkpoints || !gc_runs) && iter < 10 * iters); iter++) {
     auto v = Volume::open(env, o);
     dropped += v->stats().dropped_groups;
     Block got(kBlockSize);
@@ -97,7 +101,7 @@ TEST_CASE("crash: power loss at random points never loses an acknowledged write"
     env.crash(rng);
     acked_total += acked;
   }
-  MESSAGE(iters << " crashes, " << acked_total << " acknowledged writes, 0 lost; " << dropped
+  MESSAGE(iter << " crashes, " << acked_total << " acknowledged writes, 0 lost; " << dropped
                 << " torn groups dropped, " << checkpoints << " checkpoints, " << gc_runs << " GC runs");
   CHECK(dropped > 0);  // the torn-tail path was exercised
   CHECK(checkpoints > 0);

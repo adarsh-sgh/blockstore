@@ -7,7 +7,7 @@ jobs:
   linux:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: deps
         run: sudo apt-get update && sudo apt-get install -y liburing-dev fio
       - name: build
@@ -16,7 +16,7 @@ jobs:
         run: |
           sudo mkdir -p /mnt/bench && sudo chown "$USER" /mnt/bench
           ./scripts/bench_linux.sh build /mnt/bench 2>&1 | tee bench-linux.txt
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: bench-linux
           path: bench-linux.txt

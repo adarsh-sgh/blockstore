@@ -40,6 +40,7 @@ TEST_CASE("volume: random writes, snapshots, GC and reopen agree with a model") 
   o.segment_bytes = 64 << 10;
   o.capacity_segments = 160;  // 10 MiB physical for 8 MiB logical: GC runs constantly
   o.checkpoint_bytes = 256 << 10;
+  o.spare_segments = 2;  // exercise pre-zeroing and recycling
   std::mt19937_64 rng(42);
   Model m;
   auto v = Volume::open(env, o);
@@ -75,6 +76,7 @@ TEST_CASE("volume: random writes, snapshots, GC and reopen agree with a model") 
   CHECK(s.gc_runs > 0);
   CHECK(s.segments_freed > 0);
   CHECK(s.segments <= o.capacity_segments + 1);
+  CHECK(s.segments_recycled > 0);
 
   // Deleting every snapshot and trimming everything returns all space.
   for (auto& [id, snap] : m.snaps) v->delete_snapshot(id);
