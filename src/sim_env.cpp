@@ -170,15 +170,12 @@ void SimEnv::crash(std::mt19937_64& rng) {
   impl_->countdown = 0;
 }
 
-bool SimEnv::flip_bit(const std::string& name, std::mt19937_64& rng) {
+bool SimEnv::flip_bit(const std::string& name, uint64_t off, uint8_t mask) {
   std::lock_guard<std::mutex> g(impl_->mu);
   auto it = impl_->live.find(name);
-  if (it == impl_->live.end() || it->second->live.empty()) return false;
-  auto& n = *it->second;
-  size_t i = rng() % n.live.size();
-  uint8_t bit = static_cast<uint8_t>(1u << (rng() % 8));
-  n.live[i] ^= bit;
-  if (i < n.durable.size()) n.durable[i] ^= bit;
+  if (it == impl_->live.end() || off >= it->second->live.size()) return false;
+  it->second->live[off] ^= mask;
+  if (off < it->second->durable.size()) it->second->durable[off] ^= mask;
   return true;
 }
 

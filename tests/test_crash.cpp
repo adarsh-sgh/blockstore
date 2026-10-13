@@ -84,6 +84,8 @@ TEST_CASE("crash: power loss at random points never loses an acknowledged write"
       });
     // Crash after a random number of disk operations (lands inside group
     // commits, checkpoints and GC), or after a random time, whichever is first.
+    // Armed once writes are flowing, so slow (sanitizer) builds still test something.
+    for (int spin = 0; acked == 0 && spin < 2000; spin++) std::this_thread::sleep_for(std::chrono::milliseconds(1));
     env.freeze_after(1 + rng() % 400);
     std::this_thread::sleep_for(std::chrono::microseconds(500 + rng() % 20000));
     env.freeze();

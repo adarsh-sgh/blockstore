@@ -77,8 +77,8 @@ class SimEnv : public Env {
   void freeze();  // every later I/O throws, so nothing reaches "disk" after the crash point
   void freeze_after(uint64_t ops);  // freeze when the n-th mutating I/O call is attempted
   void crash(std::mt19937_64& rng);  // apply power-loss model, unfreeze
-  // Flip one random bit in a file's durable+live content. Returns false if the file is empty.
-  bool flip_bit(const std::string& name, std::mt19937_64& rng);
+  // Media corruption: XOR `mask` into byte `off` of a file's content.
+  bool flip_bit(const std::string& name, uint64_t off, uint8_t mask);
 
   struct Impl;
 
