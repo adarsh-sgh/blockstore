@@ -15,7 +15,7 @@
 using namespace blockstore;
 
 int main(int argc, char** argv) {
-  Args a(argc, argv);
+  Args a(argc, argv, {"no-direct", "no-prealloc", "no-compress", "no-dedup"});
   if (!a.has("dir")) {
     std::fprintf(stderr,
                  "usage: blockstored --dir D [--blocks N] [--segment-mb M] [--capacity-segments C]\n"

@@ -8,10 +8,11 @@
 
 namespace blockstore {
 
-// --key value / --flag parser for the CLIs.
+// --key value / --flag parser for the CLIs. Names in `flags` never take a value.
 class Args {
  public:
-  Args(int argc, char** argv, int first = 1) {
+  Args(int argc, char** argv, std::vector<std::string> flags = {}) {
+    const int first = 1;
     for (int i = first; i < argc; i++) {
       std::string a = argv[i];
       if (a.rfind("--", 0) != 0) {
@@ -19,7 +20,9 @@ class Args {
         continue;
       }
       a = a.substr(2);
-      if (i + 1 < argc && std::strncmp(argv[i + 1], "--", 2) != 0)
+      bool flag = false;
+      for (auto& f : flags) flag |= f == a;
+      if (!flag && i + 1 < argc && std::strncmp(argv[i + 1], "--", 2) != 0)
         kv_.push_back({a, argv[++i]});
       else
         kv_.push_back({a, ""});

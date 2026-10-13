@@ -242,7 +242,7 @@ int ingest(const Args& a) {
 }  // namespace
 
 int main(int argc, char** argv) {
-  Args a(argc, argv);
+  Args a(argc, argv, {"no-direct", "no-prealloc", "no-compress", "no-dedup"});
   std::string mode = a.positional.empty() ? "" : a.positional[0];
   if (!a.has("dir") || mode.empty()) {
     std::fprintf(stderr, "usage: blockstore_bench randwrite|replay|gc|ingest --dir D [options] (see source header)\n");
