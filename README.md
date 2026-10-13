@@ -89,7 +89,7 @@ and `F_FULLFSYNC`. In Docker, io_uring needs `--security-opt seccomp=unconfined`
   (unwritten) extents costs an ext4 journal commit for the extent conversion: 1.2 ms per 64 KiB
   write+sync in Docker, against about 41 us for a pure overwrite. A background thread can keep
   pre-zeroed segment files ready, and freed segments are recycled into that pool. On the
-  runners this cut p50 commit latency by about 35%, but zero-filling cost bandwidth and the
+  runners this cut p50 write latency by about a third, but zero-filling cost bandwidth and the
   throughput was mixed (below), so the default is off.
 
 ## Results
@@ -142,7 +142,7 @@ fleet of one OS family across releases. Ingested on the M5 at 97 MiB/s.
 
 68% of the logical blocks are zeros (unused image space). Zero blocks are never stored: they
 unmap the block. So the headline uses the non-zero ratio, and the zero-inclusive one is shown
-only for completeness. 198k of 668k non-zero blocks deduplicated, mostly across the two Debian 12 builds.
+only for completeness. 198k of the 668k non-zero blocks were dedup hits.
 
 **Fault injection** (`make test`; counts are from one run and vary with timing):
 
@@ -180,7 +180,7 @@ BLOCKSTORE_CRASH_ITERS=4000 ./build/blockstore_tests -tc="crash*"
 - **A bit flip in the last journal frame is indistinguishable from a torn write** and drops
   that group. There is no repair from the replica on CRC failure; reads just return EIO.
 - **Dedup trusts XXH3-128 without a byte compare.** That is fine against accidental collisions
-  but not adversarial ones. The whole dedup index lives in RAM (about 80 B per unique chunk).
+  but not adversarial ones. The dedup index and chunk table live entirely in RAM.
 - **GC is greedy and inline in the committer**, which stalls commits while it runs. There is no
   hot/cold separation or cost-benefit policy, and the WA at 90% utilization shows it.
 - The NBD server speaks fixed-newstyle with simple replies only: no structured replies, no
