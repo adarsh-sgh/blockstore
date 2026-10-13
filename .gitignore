@@ -1,0 +1,8 @@
+build/
+build-*/
+data/
+images/
+*.raw
+*.qcow2
+*.img
+.DS_Store
